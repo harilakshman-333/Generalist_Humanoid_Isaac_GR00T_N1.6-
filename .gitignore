@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Docker
+.docker_temp/
+
+# ROS 2
+install/
+build/
+log/
+
+# Isaac Sim / Lab
+runs/
+*.usd
+*.usda
+*.usdc
+data/
+output/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
