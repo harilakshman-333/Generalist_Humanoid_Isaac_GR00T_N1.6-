@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.isaac_lab
+      network: host
     image: humanoid-generalist/isaac-lab:latest
     runtime: nvidia
     environment:
