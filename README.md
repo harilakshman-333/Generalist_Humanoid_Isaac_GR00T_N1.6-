@@ -1,15 +1,15 @@
-# NVIDIA Isaac GR00T N1.6 Sim-to-Real Implementation
+# Unitree G1 Humanoid Generalist: Sim-to-Real Implementation
 
-This project implements a complete Sim-to-Real workflow for humanoid robots, replicating the architecture described in the NVIDIA Isaac GR00T N1.6 technical blog. It integrates high-fidelity simulation, synthetic data generation, and vision-based localization into a containerized pipeline.
+This project implements a complete Sim-to-Real workflow for the Unitree G1 humanoid robot. It bridges the NVIDIA Isaac GR00T framework with Unitree's native **UnifoLM** (Universal Foundation Model for Legged Manipulation) and utilizes both **Isaac Lab** and **mjlab** (MuJoCo) for robust policy training.
 
 ## Project Architecture
 
 The system is composed of four primary components:
 
-1.  **Whole-Body Reinforcement Learning**: Leveraging **Isaac Lab** (based on Isaac Sim 4.5.0) to train robust locomotion and manipulation policies using the RSL-RL library.
-2.  **Synthetic Navigation Data (COMPASS)**: A procedural data generation pipeline in Isaac Sim to create diverse navigation datasets for training COMPASS policies.
-3.  **Vision-Based Localization**: A strictly versioned **Isaac ROS** stack (ROS 2 Humble) running Visual SLAM (VSLAM) for high-accuracy estimation in real-world environments.
-4.  **VLA Model Integration**: A runtime interface for the **GR00T N1.6** Vision-Language-Action model to perform high-level reasoning and instruction following.
+1.  **Whole-Body Reinforcement Learning (Isaac/mjlab)**: Training robust locomotion and manipulation policies. We support both **Isaac Lab** (Isaac Sim 4.5.0) and **mjlab** (MuJoCo-Warp) to tackle Sim-to-Real domain gaps effectively.
+2.  **World-Model-Action & Navigation (UnifoLM-WMA / COMPASS)**: A hybrid procedural data generation pipeline and world model for creating diverse navigation datasets for training policies.
+3.  **Vision-Language-Action (UnifoLM-VLA)**: A runtime interface for Unitree's native 8B parameter `UnifoLM-VLA-Base` model, replacing generic VLA models to perform spatial-semantic reasoning optimized for the G1 hardware.
+4.  **Vision-Based Localization (Isaac ROS)**: A strictly versioned **Isaac ROS** stack (ROS 2 Humble) running Visual SLAM (VSLAM) for high-accuracy estimation ($100\text{Hz}$ pose) in real-world environments.
 
 ## Getting Started
 
@@ -22,12 +22,14 @@ docker compose build
 
 ### 2. Run Components
 
-**Train Whole-Body Policy (Isaac Lab)**
+**Train Whole-Body Policy**
 ```bash
+# Using Isaac Lab
 docker compose run --rm isaac-lab python3 /workspace/isaac_lab/train_policy.py
 ```
+*(Note: mjlab integration scripts are under active development in the same directory.)*
 
-**Generate Navigation Data (COMPASS)**
+**Generate Synthetic Data**
 ```bash
 docker compose run --rm isaac-lab python3 /workspace/compass_nav/generate_data.py
 ```
@@ -37,16 +39,21 @@ docker compose run --rm isaac-lab python3 /workspace/compass_nav/generate_data.p
 docker compose up localization
 ```
 
+**Run VLA Inference Server**
+```bash
+docker compose run --rm gr00t python3 /workspace/gr00t_model/run_inference.py
+```
+
 ## Structure
 
-- `isaac_lab/`: Policy training scripts and environment configurations.
-- `compass_nav/`: Synthetic data generation logic.
-- `localization/`: ROS 2 launch files and configuration for VSLAM.
-- `gr00t_model/`: Inference interface for the VLA model.
-- `docker/`: Dockerfiles pinning specific Isaac Sim and ROS 2 versions for reproducibility.
+- `isaac_lab/`: Policy training scripts and environment configurations (Isaac Lab & mjlab).
+- `compass_nav/`: Synthetic data generation logic (WMA/COMPASS).
+- `localization/`: ROS 2 launch files and configuration for Visual SLAM.
+- `gr00t_model/`: Inference interface for the UnifoLM / GR00T VLA models.
+- `docker/`: Dockerfiles pinning specific simulation and ROS 2 versions for reproducibility.
 
 ## Requirements
 
 - Linux (Ubuntu 22.04 recommended)
-- NVIDIA GPU (RTX series recommended for Isaac Sim)
+- NVIDIA GPU (RTX series recommended)
 - Docker & Docker Compose
