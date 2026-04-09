@@ -1,0 +1,85 @@
+# Dockerfile.gr00t
+# Container for GR00T-N1.6 / UnifoLM-VLA inference.
+#
+# Uses the NVIDIA PyTorch image as base (ships CUDA + cuDNN + torch).
+# HuggingFace Transformers handles model loading, with optional
+# 8-bit quantization via bitsandbytes for VRAM-limited GPUs.
+#
+# Run modes:
+#   Mock (no weights):  MOCK_MODE=1  (default in docker-compose)
+#   Real weights:       MOCK_MODE=0  MODEL_ID=nvidia/GR00T-N1.6-3B
+#
+# Expose HTTP API:
+#   python3 /workspace/gr00t_model/vla_server.py --mock
+#   → http://localhost:8000/health
+#   → POST http://localhost:8000/infer
+
+FROM nvcr.io/nvidia/pytorch:23.10-py3
+
+LABEL maintainer="G1 Humanoid Generalist Project"
+LABEL description="GR00T / UnifoLM VLA inference service for Unitree G1"
+
+WORKDIR /workspace
+
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Python dependencies
+# ---------------------------------------------------------------------------
+RUN pip install --no-cache-dir \
+    # HuggingFace ecosystem
+    transformers>=4.40.0 \
+    accelerate>=0.27.0 \
+    bitsandbytes>=0.43.0 \
+    # Image processing
+    Pillow>=10.0.0 \
+    torchvision \
+    # REST API server
+    fastapi>=0.110.0 \
+    uvicorn[standard]>=0.28.0 \
+    pydantic>=2.0.0 \
+    # Utilities
+    numpy \
+    scipy
+
+# ---------------------------------------------------------------------------
+# Optional: ROS 2 Python client (for publishing to /vla/target_pose)
+# Install only if ROS_ENABLED=1 is set — avoids bloating the base image.
+# To enable: rebuild with --build-arg INSTALL_ROS=1
+# ---------------------------------------------------------------------------
+ARG INSTALL_ROS=0
+RUN if [ "$INSTALL_ROS" = "1" ]; then \
+        apt-get update && apt-get install -y \
+            ros-humble-rclpy \
+            ros-humble-geometry-msgs \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Copy inference scripts
+# ---------------------------------------------------------------------------
+COPY gr00t_model /workspace/gr00t_model
+
+# Create cache directory (mapped to named volume in compose)
+RUN mkdir -p /root/.cache/huggingface
+
+# ---------------------------------------------------------------------------
+# Environment defaults (overridable in docker-compose.yml)
+# ---------------------------------------------------------------------------
+ENV MODEL_ID=nvidia/GR00T-N1.6-3B
+ENV MOCK_MODE=1
+ENV ROS_ENABLED=0
+ENV PYTHONPATH="/workspace:${PYTHONPATH}"
+
+# Expose HTTP API port
+EXPOSE 8000
+
+CMD ["python3", "/workspace/gr00t_model/run_inference.py", "--mock", "--infer_hz", "5"]

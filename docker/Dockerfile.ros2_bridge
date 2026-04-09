@@ -1,0 +1,149 @@
+# Dockerfile.ros2_bridge
+# Container for the G1 ROS 2 communication bridge and safety monitor.
+#
+# Based on the official Isaac ROS Humble image which ships rclpy,
+# rclcpp, and all standard ROS 2 message types pre-installed.
+#
+# Built automatically by docker compose build.
+
+FROM nvcr.io/nvidia/isaac/ros:x86_64-ros2_humble_f247dd1051869171c3fc53bb35f6b907
+
+LABEL maintainer="G1 Humanoid Generalist Project"
+LABEL description="ROS 2 Humble bridge node + safety monitor for Unitree G1"
+
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-dev \
+    ros-humble-geometry-msgs \
+    ros-humble-nav-msgs \
+    ros-humble-sensor-msgs \
+    ros-humble-std-msgs \
+    ros-humble-launch-ros \
+    ros-humble-launch \
+    ros-humble-rclpy \
+    ros-humble-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Python dependencies
+# ---------------------------------------------------------------------------
+RUN pip3 install --no-cache-dir \
+    numpy \
+    scipy
+
+# ---------------------------------------------------------------------------
+# Workspace layout
+# ---------------------------------------------------------------------------
+WORKDIR /ros2_ws
+
+# Copy bridge source
+COPY ros2_bridge /ros2_ws/src/ros2_bridge/ros2_bridge/
+COPY mock_robot   /ros2_ws/src/mock_robot/mock_robot/
+
+# Package manifests (generated below via heredoc — colcon requires them)
+# ros2_bridge package
+RUN mkdir -p /ros2_ws/src/ros2_bridge && cat > /ros2_ws/src/ros2_bridge/package.xml <<'EOF'
+<?xml version="1.0"?>
+<package format="3">
+  <name>ros2_bridge</name>
+  <version>0.1.0</version>
+  <description>G1 ROS 2 Communication Bridge and Safety Monitor</description>
+  <maintainer email="dev@g1.local">G1 Dev</maintainer>
+  <license>Apache-2.0</license>
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+EOF
+
+RUN cat > /ros2_ws/src/ros2_bridge/setup.py <<'EOF'
+from setuptools import setup, find_packages
+setup(
+    name="ros2_bridge",
+    version="0.1.0",
+    packages=find_packages(),
+    install_requires=[],
+    entry_points={
+        "console_scripts": [
+            "g1_bridge_node  = ros2_bridge.g1_bridge_node:main",
+            "safety_monitor  = ros2_bridge.safety_monitor:main",
+        ],
+    },
+)
+EOF
+
+RUN cat > /ros2_ws/src/ros2_bridge/setup.cfg <<'EOF'
+[develop]
+script_dir=$base/lib/ros2_bridge
+[install]
+install_scripts=$base/lib/ros2_bridge
+EOF
+
+# mock_robot package
+RUN mkdir -p /ros2_ws/src/mock_robot && cat > /ros2_ws/src/mock_robot/package.xml <<'EOF'
+<?xml version="1.0"?>
+<package format="3">
+  <name>mock_robot</name>
+  <version>0.1.0</version>
+  <description>Mock Unitree G1 hardware simulator for dry-run testing</description>
+  <maintainer email="dev@g1.local">G1 Dev</maintainer>
+  <license>Apache-2.0</license>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+EOF
+
+RUN cat > /ros2_ws/src/mock_robot/setup.py <<'EOF'
+from setuptools import setup, find_packages
+setup(
+    name="mock_robot",
+    version="0.1.0",
+    packages=find_packages(),
+    install_requires=[],
+    entry_points={
+        "console_scripts": [
+            "mock_g1_node = mock_robot.mock_g1_node:main",
+        ],
+    },
+)
+EOF
+
+RUN cat > /ros2_ws/src/mock_robot/setup.cfg <<'EOF'
+[develop]
+script_dir=$base/lib/mock_robot
+[install]
+install_scripts=$base/lib/mock_robot
+EOF
+
+# ---------------------------------------------------------------------------
+# Build the colcon workspace
+# ---------------------------------------------------------------------------
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    cd /ros2_ws && \
+    colcon build --symlink-install --packages-select ros2_bridge mock_robot 2>&1"
+
+# ---------------------------------------------------------------------------
+# Entrypoint: source workspace then run
+# ---------------------------------------------------------------------------
+COPY docker/ros2_bridge_entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ENV ROS_DOMAIN_ID=0
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "ros2_bridge", "ros2_bridge.launch.py", "mock:=true"]

@@ -1,43 +1,200 @@
+# docker-compose.yml
+# Unitree G1 Humanoid Generalist — Full Stack Orchestration
+#
+# Services:
+#   isaac-lab    — Whole-Body RL training (Isaac Sim 4.5.0 + RSL-RL)
+#   localization — Visual SLAM / Isaac ROS VSLAM (Isaac ROS Humble)
+#   gr00t        — VLA inference (GR00T-N1.6 / UnifoLM-VLA)
+#   ros2_bridge  — State machine + safety monitor + navigation controller
+#   mock_robot   — Software-only G1 hardware simulator (dry-run testing)
+#
+# Usage:
+#
+#   Full dry-run (no hardware):
+#     docker compose up ros2_bridge mock_robot
+#
+#   Add VLA inference:
+#     docker compose up ros2_bridge mock_robot gr00t
+#
+#   Train RL policy (separate — needs Isaac Sim license):
+#     docker compose run --rm isaac-lab \
+#         python3 /workspace/isaac_lab/train_policy.py --num_envs 512
+#
+#   Generate synthetic data:
+#     docker compose run --rm isaac-lab \
+#         python3 /workspace/compass_nav/generate_data.py
+#
+#   Launch VSLAM (real camera required):
+#     docker compose up localization
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit installed
+#   - docker login nvcr.io  (for Isaac Sim / Isaac ROS images)
+#   - GPU with ≥ 16 GB VRAM for RL training; 8 GB for VLA inference
+
 version: '3.8'
 
+# ---------------------------------------------------------------------------
+# Shared network — all ROS 2 nodes discover each other via DDS
+# ---------------------------------------------------------------------------
+networks:
+  ros2_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br_ros2
+
+# ---------------------------------------------------------------------------
+# Shared volumes
+# ---------------------------------------------------------------------------
+volumes:
+  isaac_logs:       # RL training checkpoints and tensorboard logs
+  compass_data:     # Synthetic navigation datasets
+  mock_logs:        # Command logs from mock_robot
+  gr00t_cache:      # HuggingFace model cache (~6 GB)
+
+# ---------------------------------------------------------------------------
+# Common GPU config (anchor — reused across services)
+# ---------------------------------------------------------------------------
+x-gpu-config: &gpu-config
+  runtime: nvidia
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    - ACCEPT_EULA=Y
+
+x-ros2-env: &ros2-env
+  environment:
+    - ROS_DOMAIN_ID=0
+    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    - RCUTILS_COLORIZED_OUTPUT=1
+
+# ===========================================================================
+# SERVICES
+# ===========================================================================
 services:
+
+  # -------------------------------------------------------------------------
+  # 1. WHOLE-BODY RL TRAINING (Isaac Lab)
+  # -------------------------------------------------------------------------
   isaac-lab:
     build:
       context: .
       dockerfile: docker/Dockerfile.isaac_lab
-      network: host
     image: humanoid-generalist/isaac-lab:latest
-    runtime: nvidia
+    <<: *gpu-config
     environment:
       - ACCEPT_EULA=Y
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
     volumes:
-      - ./isaac_lab:/workspace/isaac_lab
-      - ./compass_nav:/workspace/compass_nav
+      - ./isaac_lab:/workspace/isaac_lab         # live-edit scripts
+      - ./compass_nav:/workspace/compass_nav      # live-edit data gen
+      - isaac_logs:/workspace/isaac_lab/logs      # persist checkpoints
+      - compass_data:/workspace/compass_nav/data  # persist datasets
+    # Default: interactive shell. Override per run command.
     command: /bin/bash
+    profiles:
+      - train   # only starts with: docker compose --profile train up
 
+  # -------------------------------------------------------------------------
+  # 2. VISUAL SLAM / LOCALIZATION (Isaac ROS)
+  # -------------------------------------------------------------------------
   localization:
     build:
       context: .
       dockerfile: docker/Dockerfile.localization
     image: humanoid-generalist/localization:latest
-    runtime: nvidia
+    <<: *gpu-config
     environment:
       - ACCEPT_EULA=Y
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
     volumes:
-      - ./localization:/ros2_ws/src/localization
-    command: /bin/bash
+      - ./localization:/ros2_ws/src/localization  # live-edit launch files
+    # USB/GigE cameras require host network or device pass-through
+    network_mode: host
+    devices:
+      - /dev/video0:/dev/video0   # Forward camera (plug in camera to enable)
+    command: >
+      ros2 launch localization localize.launch.py
+    profiles:
+      - hardware   # only starts when connecting real camera/robot
 
+  # -------------------------------------------------------------------------
+  # 3. VLA INFERENCE (GR00T / UnifoLM)
+  # -------------------------------------------------------------------------
   gr00t:
-    image: nvcr.io/nvidia/pytorch:23.10-py3 # Placeholder base image
-    runtime: nvidia
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gr00t
+    image: humanoid-generalist/gr00t:latest
+    <<: *gpu-config
     environment:
       - ACCEPT_EULA=Y
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      # Set to "0" and provide MODEL_ID to load real weights
+      - MOCK_MODE=1
+      - MODEL_ID=nvidia/GR00T-N1.6-3B
+      # Enable ROS 2 publishing
+      - ROS_ENABLED=1
     volumes:
-      - ./gr00t_model:/workspace/gr00t_model
-    command: python3 /workspace/gr00t_model/run_inference.py
+      - ./gr00t_model:/workspace/gr00t_model   # live-edit inference scripts
+      - gr00t_cache:/root/.cache/huggingface   # cache downloaded weights
+    networks:
+      - ros2_net
+    # Expose HTTP inference API
+    ports:
+      - "8000:8000"
+    command: >
+      bash -c "pip install fastapi uvicorn pillow transformers accelerate &&
+               python3 /workspace/gr00t_model/run_inference.py
+                 --mock --ros --infer_hz 5"
+
+  # -------------------------------------------------------------------------
+  # 4. ROS 2 BRIDGE + SAFETY MONITOR
+  # -------------------------------------------------------------------------
+  ros2_bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2_bridge
+    image: humanoid-generalist/ros2_bridge:latest
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - RCUTILS_COLORIZED_OUTPUT=1
+    volumes:
+      - ./ros2_bridge:/ros2_ws/src/ros2_bridge/ros2_bridge  # live-edit
+    networks:
+      - ros2_net
+    depends_on:
+      - mock_robot   # bridge needs mock sensor data ready first
+    command: >
+      ros2 launch ros2_bridge ros2_bridge.launch.py
+        mock:=true
+        vla_mock:=true
+        log_level:=info
+
+  # -------------------------------------------------------------------------
+  # 5. MOCK ROBOT (software-only G1 hardware simulator)
+  # -------------------------------------------------------------------------
+  mock_robot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros2_bridge   # shares same base image
+    image: humanoid-generalist/ros2_bridge:latest  # reuse built image
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - RCUTILS_COLORIZED_OUTPUT=1
+    volumes:
+      - ./mock_robot:/ros2_ws/src/mock_robot/mock_robot  # live-edit
+      - mock_logs:/workspace/mock_robot/logs              # persist logs
+    networks:
+      - ros2_net
+    command: >
+      ros2 run mock_robot mock_g1_node

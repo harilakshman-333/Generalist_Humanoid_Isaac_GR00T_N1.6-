@@ -1,22 +1,97 @@
-# Base image for Isaac Sim / Isaac Lab
-# NOTE: This is a placeholder base image. Real usage requires the official Isaac Lab image or proper installation steps.
-FROM nvcr.io/nvidia/isaac-sim:4.5.0 
+# Dockerfile.isaac_lab
+# Isaac Lab container for Unitree G1 whole-body RL training.
+#
+# Installs:
+#   - Isaac Lab (cloned at build time)
+#   - RSL-RL (PPO runner)
+#   - Python deps for g1_env_cfg.py and domain_rand.py
+#
+# NOTE: The base image ships Isaac Sim 4.5.0. NGC authentication is
+#       required — log in first:
+#         docker login nvcr.io
+#
+# Build:
+#   docker compose build isaac-lab
+#
+# Train:
+#   docker compose run --rm isaac-lab \
+#       python3 /workspace/isaac_lab/train_policy.py \
+#       --num_envs 512 --max_iterations 3000
+
+FROM nvcr.io/nvidia/isaac-sim:4.5.0
+
+LABEL maintainer="G1 Humanoid Generalist Project"
+LABEL description="Isaac Lab + RSL-RL whole-body RL training for Unitree G1"
 
 WORKDIR /workspace
 
-# Install system dependencies
-RUN rm -rf /var/lib/apt/lists/* \
-    && apt-get update -o Acquire::AllowInsecureRepositories=true \
-    && apt-get install -y --allow-unauthenticated --fix-missing \
-    git \
-    python3-pip \
+# ---------------------------------------------------------------------------
+# System dependencies
+# ---------------------------------------------------------------------------
+RUN rm -rf /var/lib/apt/lists/* && \
+    apt-get update -o Acquire::AllowInsecureRepositories=true && \
+    apt-get install -y --allow-unauthenticated --no-install-recommends \
+        git \
+        git-lfs \
+        python3-pip \
+        python3-dev \
+        wget \
+        unzip \
+        libgl1 \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Placeholder for Isaac Lab installation
-# RUN git clone https://github.com/isaac-sim/IsaacLab.git && ...
+# ---------------------------------------------------------------------------
+# Isaac Lab
+# Only clones the repo — uses the Python already bundled with Isaac Sim.
+# The actual pip install uses Isaac Sim's internal Python interpreter.
+# ---------------------------------------------------------------------------
+RUN git clone --depth 1 --branch main \
+    https://github.com/isaac-sim/IsaacLab.git /opt/IsaacLab
 
-# Copy local scripts
-COPY isaac_lab /workspace/isaac_lab
+# Install Isaac Lab in editable mode using Isaac Sim's Python
+# isaac-sim ships python at /isaac-sim/python.sh
+RUN /isaac-sim/python.sh -m pip install --upgrade pip && \
+    /isaac-sim/python.sh -m pip install \
+        --extra-index-url https://pypi.nvidia.com \
+        -e /opt/IsaacLab/source/extensions/omni.isaac.lab \
+        -e /opt/IsaacLab/source/extensions/omni.isaac.lab_tasks \
+        -e /opt/IsaacLab/source/extensions/omni.isaac.lab_assets \
+    || echo "[WARN] Isaac Lab extensions installed with warnings — check output above."
+
+# ---------------------------------------------------------------------------
+# RSL-RL (PPO implementation used by train_policy.py)
+# ---------------------------------------------------------------------------
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir \
+    rsl-rl \
+    tensorboard \
+    matplotlib \
+    scipy \
+    imageio
+
+# ---------------------------------------------------------------------------
+# Additional deps for G1 env config and domain randomization
+# ---------------------------------------------------------------------------
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir \
+    gymnasium \
+    numpy \
+    torch \
+    torchvision
+
+# ---------------------------------------------------------------------------
+# Copy project scripts
+# ---------------------------------------------------------------------------
+COPY isaac_lab   /workspace/isaac_lab
 COPY compass_nav /workspace/compass_nav
+
+# Create log directory
+RUN mkdir -p /workspace/isaac_lab/logs /workspace/compass_nav/data
+
+# ---------------------------------------------------------------------------
+# Convenience wrapper so `python3` inside the container uses Isaac Sim's
+# bundled interpreter (which has all omni.* packages on its path)
+# ---------------------------------------------------------------------------
+RUN ln -sf /isaac-sim/python.sh /usr/local/bin/python3_isaacsim
+ENV PYTHONPATH="/workspace:${PYTHONPATH}"
 
 CMD ["/bin/bash"]

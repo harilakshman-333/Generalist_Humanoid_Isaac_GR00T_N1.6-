@@ -1,17 +1,89 @@
-# Base image for Isaac ROS
+# Dockerfile.localization
+# Isaac ROS VSLAM container for the Unitree G1.
+# Provides 100 Hz visual-inertial odometry via Isaac ROS Visual SLAM.
+
 FROM nvcr.io/nvidia/isaac/ros:x86_64-ros2_humble_f247dd1051869171c3fc53bb35f6b907
+
+LABEL description="Isaac ROS Visual SLAM localization for Unitree G1"
 
 WORKDIR /ros2_ws
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
+# ---------------------------------------------------------------------------
+# ROS packages required for localization
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-isaac-ros-visual-slam \
+    ros-humble-isaac-ros-nitros \
+    ros-humble-image-transport \
+    ros-humble-camera-info-manager \
+    ros-humble-launch-ros \
+    ros-humble-launch \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy local source
-COPY localization /ros2_ws/src/localization
+# ---------------------------------------------------------------------------
+# Copy and build local localization package
+# ---------------------------------------------------------------------------
+COPY localization /ros2_ws/src/localization/
 
-# Build workspace (placeholder)
-# RUN colcon build
+# Generate a minimal package.xml so colcon can find the package
+RUN cat > /ros2_ws/src/localization/package.xml <<'EOF'
+<?xml version="1.0"?>
+<package format="3">
+  <name>localization</name>
+  <version>0.1.0</version>
+  <description>G1 Visual SLAM launch configuration</description>
+  <maintainer email="dev@g1.local">G1 Dev</maintainer>
+  <license>Apache-2.0</license>
+  <depend>rclpy</depend>
+  <depend>isaac_ros_visual_slam</depend>
+  <depend>launch_ros</depend>
+  <export><build_type>ament_python</build_type></export>
+</package>
+EOF
 
-CMD ["/bin/bash"]
+RUN cat > /ros2_ws/src/localization/setup.py <<'EOF'
+from setuptools import setup
+setup(
+    name="localization",
+    version="0.1.0",
+    packages=[],
+    data_files=[
+        ("share/localization/launch", ["localize.launch.py"]),
+        ("share/ament_index/resource_index/packages", ["resource/localization"]),
+    ],
+)
+EOF
+
+RUN mkdir -p /ros2_ws/src/localization/resource && \
+    touch /ros2_ws/src/localization/resource/localization
+
+RUN cat > /ros2_ws/src/localization/setup.cfg <<'EOF'
+[develop]
+script_dir=$base/lib/localization
+[install]
+install_scripts=$base/lib/localization
+EOF
+
+# Build the workspace
+RUN /bin/bash -c "\
+    source /opt/ros/humble/setup.bash && \
+    cd /ros2_ws && \
+    colcon build --symlink-install --packages-select localization 2>&1"
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+RUN cat > /entrypoint.sh <<'EOF'
+#!/bin/bash
+set -e
+source /opt/ros/humble/setup.bash
+[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash
+exec "$@"
+EOF
+RUN chmod +x /entrypoint.sh
+
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ENV ROS_DOMAIN_ID=0
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["ros2", "launch", "localization", "localize.launch.py"]
