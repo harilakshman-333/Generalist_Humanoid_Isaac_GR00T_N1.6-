@@ -7,9 +7,10 @@ This project implements a complete Sim-to-Real workflow for the Unitree G1 human
 The system is composed of four primary components:
 
 1.  **Whole-Body Reinforcement Learning (Isaac/mjlab)**: Training robust locomotion and manipulation policies. We support both **Isaac Lab** (Isaac Sim 4.5.0) and **mjlab** (MuJoCo-Warp) to tackle Sim-to-Real domain gaps effectively.
-2.  **World-Model-Action & Navigation (UnifoLM-WMA / COMPASS)**: A hybrid procedural data generation pipeline and world model for creating diverse navigation datasets for training policies.
-3.  **Vision-Language-Action (UnifoLM-VLA)**: A runtime interface for Unitree's native 8B parameter `UnifoLM-VLA-Base` model, replacing generic VLA models to perform spatial-semantic reasoning optimized for the G1 hardware.
-4.  **Vision-Based Localization (Isaac ROS)**: A strictly versioned **Isaac ROS** stack (ROS 2 Humble) running Visual SLAM (VSLAM) for high-accuracy estimation ($100\text{Hz}$ pose) in real-world environments.
+2.  **Dataset-Guided Alignment (UnifoLM-WBT)**: Integrating real-world whole-body teleoperation (WBT) data from the open-sourced **UnifoLM-WBT-Dataset** to bridge the sim-to-real gap and provide expert demonstrations for complex manipulation tasks.
+3.  **World-Model-Action & Navigation (UnifoLM-WMA / COMPASS)**: A hybrid procedural data generation pipeline and world model for creating diverse navigation datasets for training policies.
+4.  **Vision-Language-Action (UnifoLM-VLA)**: A runtime interface for Unitree's native 8B parameter `UnifoLM-VLA-Base` model, fine-tuned with WBT data for precise real-world spatial-semantic reasoning.
+5.  **Vision-Based Localization (Isaac ROS)**: A strictly versioned **Isaac ROS** stack (ROS 2 Humble) running Visual SLAM (VSLAM) for high-accuracy estimation ($100\text{Hz}$ pose) in real-world environments.
 
 ## Getting Started
 

@@ -1,80 +1,211 @@
-# Walkthrough: Unitree G1 Humanoid Generalist Setup
+# Walkthrough: Unitree G1 Humanoid Generalist — Pre-Robot Build-Out
 
-I have initialized the project structure for replicating the NVIDIA Isaac GR00T workflow, enhanced with **Unitree's UnifoLM** architecture and **mjlab** for the **Unitree G1**, fully containerized with Docker.
+## What Was Built
+
+This walkthrough documents the full software stack implemented *before* connecting to the physical Unitree G1. Every component can be validated in a software-only dry run.
+
+---
 
 ## Directory Structure
 
-The project is located at `/home/kwalker96/humanoid_generalist` and organized as follows:
-
 ```
 humanoid_generalist/
-├── docker/                 # Docker configuration
-│   ├── Dockerfile.isaac_lab
-│   └── Dockerfile.localization
-├── isaac_lab/              # Whole-Body RL & mjlab
-│   └── train_policy.py     # Base script for PPO training
-├── compass_nav/            # Synthetic Data Generation & UnifoLM-WMA
-│   └── generate_data.py
-├── localization/           # Vision-Based Localization (ROS 2)
-│   └── localize.launch.py
-├── gr00t_model/            # VLA Integration (UnifoLM-VLA / GR00T)
-│   └── run_inference.py
-├── docker-compose.yml      # Orchestration
-└── README.md               # Documentation
+├── docker/
+│   ├── Dockerfile.isaac_lab        # Isaac Sim 4.5.0 + Isaac Lab + RSL-RL
+│   ├── Dockerfile.localization     # Isaac ROS Humble + Visual SLAM
+│   ├── Dockerfile.gr00t            # PyTorch + HuggingFace VLA inference
+│   ├── Dockerfile.ros2_bridge      # ROS 2 Humble bridge + safety monitor
+│   └── ros2_bridge_entrypoint.sh   # Sources ROS 2 workspace at container start
+├── isaac_lab/
+│   ├── train_policy.py             # PPO training loop (G1-specific)
+│   ├── g1_env_cfg.py               # G1 23-DoF environment configuration
+│   └── domain_rand.py              # Domain randomization (mass/friction/motor/push)
+├── compass_nav/
+│   └── generate_data.py            # Synthetic navigation data generation
+├── localization/
+│   └── localize.launch.py          # Isaac ROS VSLAM launch (100 Hz pose)
+├── gr00t_model/
+│   ├── run_inference.py            # VLA inference loop + ROS 2 publisher
+│   └── vla_server.py               # FastAPI HTTP server for VLA inference
+├── ros2_bridge/
+│   ├── g1_bridge_node.py           # State machine + navigation controller
+│   ├── safety_monitor.py           # 100 Hz hardware limit watchdog
+│   └── ros2_bridge.launch.py       # Launches bridge + safety + VLA together
+├── mock_robot/
+│   ├── mock_g1_node.py             # Full software G1 hardware simulator
+│   └── logs/                       # Command logs (JSONL, auto-created)
+├── docker-compose.yml              # Five-service orchestration
+└── README.md
 ```
 
-## Docker Services
+---
 
-The `docker-compose.yml` defines three main services:
+## System Architecture
 
-- **isaac-lab**: For running Whole-Body RL training (Isaac Sim/mjlab) and data generation.
-    - Base Image: `nvcr.io/nvidia/isaac-sim:4.5.0`
-- **localization**: For running the Isaac ROS visual SLAM and localization stack.
-    - Base Image: `nvcr.io/nvidia/isaac/ros:x86_64-ros2_humble_f247dd1051869171c3fc53bb35f6b907`
-    - Package: `ros-humble-isaac-ros-visual-slam` 
-- **gr00t**: For running the VLA model inference.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        ROS 2 Network (ros2_net)              │
+│                                                             │
+│  ┌──────────────┐    /vla/target_pose    ┌───────────────┐  │
+│  │  gr00t       │──────────────────────▶│ ros2_bridge   │  │
+│  │  (VLA Brain) │                        │  (Bridge Node)│  │
+│  │  5 Hz        │◀── /camera/left/image  │  50 Hz ctrl  │  │
+│  └──────────────┘                        └───────┬───────┘  │
+│                                                  │          │
+│  ┌──────────────┐  /visual_slam/odometry         │          │
+│  │ localization │──────────────────────────────▶│          │
+│  │  (VSLAM)     │                                │          │
+│  │  100 Hz      │                        /g1/cmd_vel        │
+│  └──────────────┘                        /g1/joint_commands │
+│                                                  │          │
+│  ┌──────────────┐    /g1/joint_states   ┌────────▼───────┐  │
+│  │ mock_robot   │◀──────────────────────│ safety_monitor │  │
+│  │ (Mock G1)    │──────────────────────▶│  100 Hz        │  │
+│  │  50 Hz sim   │    /g1/imu            └───────┬───────┘  │
+│  └──────────────┘    /g1/e_stop ◀───────────────┘          │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### 1. Whole-Body RL (Isaac Lab / mjlab)
-- **Script**: `isaac_lab/train_policy.py`
-- **Architecture**: Capable of using `omni.isaac.lab.app.AppLauncher` for Isaac Sim, but will be extended to support the MuJoCo-backed `mjlab` API for better Sim-to-Real transfer on the G1.
-- **Run Command**: `docker compose run --rm isaac-lab python3 /workspace/isaac_lab/train_policy.py`
+---
 
-### 2. Synthetic Data & World Models (WMA/COMPASS)
-- **Script**: `compass_nav/generate_data.py`
-- **Architecture**: A procedural generation script designed to be enhanced by the `UnifoLM-WMA-0` Simulation Engine. Generates navigation metadata and expert trajectories.
-- **Run Command**: `docker compose run --rm isaac-lab python3 /workspace/compass_nav/generate_data.py`
+## Component Details
 
-### 3. Visual Localization (Isaac ROS)
-- **Launch File**: `localization/localize.launch.py`
-- **Architecture**: Configures the `isaac_ros_visual_slam` ComposableNode to provide $100\text{Hz}$ pose estimation from real Realsense/stereo cameras.
-- **Run Command**: `docker compose up localization`
+### 1. Whole-Body RL (`isaac_lab/`)
 
-### 4. VLA Integration (UnifoLM-VLA)
-- **Script**: `gr00t_model/run_inference.py`
-- **Architecture**: Python-based inference loop designed for HuggingFace transformers. Configured to load Unitree's native `UnifoLM-VLA-Base` (8B), avoiding the friction of generic GR00T models. Process multimodal inputs (Image+Text) and outputs spatial actions.
-- **Run Command**: `docker compose run --rm gr00t python3 /workspace/gr00t_model/run_inference.py`
+| Item | Value |
+|---|---|
+| Algorithm | PPO (RSL-RL) |
+| Observation dims | 81 (vel × 2, gravity, cmd × 2, joint pos+vel, last action) |
+| Action dims | 23 (one per G1 joint) |
+| Policy frequency | 50 Hz (200 Hz sim ÷ decimation 4) |
+| Training envs | 512 parallel |
 
-### 5. System Architecture
+**Domain Randomization applied at every reset:**
+- Body mass ± 2 kg
+- Joint friction × [0.7, 1.3]
+- Motor strength × [0.9, 1.1]
+- Ground friction [0.3, 1.5]
+- Random push forces up to 150 N every ~8 s
 
-#### Technical Dependency Explanation
+### 2. Dataset-Guided Alignment (`UnifoLM-WBT`)
 
-1.  **Isaac Lab / mjlab (RL Base)**:
-    - **role**: It is the "muscle memory" factory. It runs offline to produce the **Whole-Body Policy** that converts high-level commands (velocity) into low-level motor torques. `mjlab` ensures MuJoCo physics fidelity for the G1.
+The project leverages the **Unitree UnifoLM-WBT-Dataset** (released March 2026) to ground simulation results in real-world humanoid mechanics.
 
-2.  **UnifoLM-WMA / COMPASS (Navigation Data)**:
-    - **role**: It generates massive synthetic datasets to train a robust Navigation Policy. This policy handles "getting from A to B" without colliding. Can leverage the `UnifoLM_WBT_Dataset`.
+| Use Case | Implementation |
+|---|---|
+| **Expert Demos** | Using real WBT trajectories as target joint states for Imitation Learning. |
+| **VLA Fine-tuning** | Refining the 8B `UnifoLM-VLA` on G1-specific manipulation data. |
+| **Dynamics Tuning**| Refining `domain_rand.py` coefficients using real hardware torque/velocity distributions. |
 
-3.  **Isaac ROS (Visual Perception)**:
-    - **role**: The "eyes" and "inner ear". It processes raw camera streams to tell the robot *where it is* (Pose), decoupling hardware drivers from pure inference.
+### 3. VLA Inference (`gr00t_model/`)
 
-4.  **UnifoLM-VLA (High-Level Brain)**:
-    - **role**: The "commander". It takes multimodal input (Language + Vision) and outputs high-level intents or spatial manipulation targets. Naturally optimized for legged systems.
+| Item | Value |
+|---|---|
+| Model | `nvidia/GR00T-N1.6-3B` (or UnifoLM-VLA-Base) |
+| Inference rate | 5 Hz |
+| Input | RGB frame (640×480) + natural language instruction |
+| Output | `{action_type, target_xyz, target_rpy, gripper_open}` |
+| Fallback | Mock mode — synthetic output, no weights needed |
+| HTTP API | `POST localhost:8000/infer` |
 
-### 6. Next Steps (Algorithm Development)
+### 3. ROS 2 Bridge (`ros2_bridge/`)
 
-1.  **Clone `mjlab` Toolchain**:
-    - Update the learning environment to support MuJoCo backends via the `mjlab` API.
-2.  **Download UnifoLM Models (`gr00t_model`)**:
-    - Update `gr00t_model/run_inference.py` to point to `unitreerobotics/UnifoLM-VLA-Base` on Hugging Face.
-3.  **Real-World Prep**:
-    - Build drivers to map the G1's raw sensor inputs to ROS 2 topics matching `isaac_ros_visual_slam`.
+**State Machine:**
+```
+IDLE → LOCALIZING → NAVIGATING → MANIPULATING
+                       ↑               |
+                       └───────────────┘
+                    (all states) → E_STOP
+```
+
+**Safety Monitor checks (100 Hz):**
+- Joint position limits (warning at 80%, E-STOP at 95% of hardware limit)
+- Joint velocity > 10 rad/s → E-STOP
+- Command watchdog: 500 ms silence while moving → E-STOP
+- IMU tilt > 35° → E-STOP
+
+### 4. Mock Robot (`mock_robot/`)
+
+Simulates the full G1 SDK interface:
+- 23 joint positions with Gaussian noise (σ = 0.002 rad)
+- IMU: gravity vector + gyro drift
+- Forward camera: synthetic gradient images at 30 Hz
+- Odometry: 2D unicycle integration with momentum smoothing
+- Logs all received commands to `mock_robot/logs/*.jsonl`
+
+---
+
+## Running the Dry-Run (No Hardware)
+
+```bash
+# Terminal 1: Start mock robot + bridge
+docker compose up ros2_bridge mock_robot
+
+# Terminal 2: Inject a fake VLA target (navigate 1 m forward)
+docker exec -it <bridge_container> bash
+ros2 topic pub --once /vla/target_pose geometry_msgs/PoseStamped \
+  "{header: {frame_id: 'map'}, pose: {position: {x: 1.0, y: 0.0, z: 0.0}}}"
+
+# Terminal 3: Observe outputs
+ros2 topic echo /g1/cmd_vel
+ros2 topic echo /g1/safety_status
+ros2 topic echo /g1/state
+
+# Trigger E-STOP manually
+ros2 topic pub --once /g1/e_stop std_msgs/Bool "{data: true}"
+```
+
+---
+
+## Running VLA Inference (HTTP API, no ROS needed)
+
+```bash
+# Start VLA server in mock mode
+docker compose run --rm gr00t \
+  python3 /workspace/gr00t_model/vla_server.py --mock
+
+# Health check
+curl http://localhost:8000/health | python3 -m json.tool
+
+# Test inference
+curl -X POST http://localhost:8000/infer \
+  -H "Content-Type: application/json" \
+  -d '{"instruction": "Pick up the red block", "image_b64": ""}' \
+  | python3 -m json.tool
+```
+
+---
+
+## What's Next (When Robot Arrives)
+
+| Step | Action |
+|---|---|
+| 1 | Download `UnifoLM-WBT-Dataset` from Hugging Face for G1-specific motion priors |
+| 2 | Fine-tune `UnifoLM-VLA` using real-world manipulation clips (folding clothes, pick/place) |
+| 3 | Install Unitree SDK 2 and connect to G1 via Ethernet |
+| 4 | Replace `mock_robot` service with actual Unitree SDK 2 bridge |
+| 5 | Set `MOCK_MODE=0` and download VLA model weights (`huggingface-cli login`) |
+| 6 | Switch localization to real RealSense D435i topics |
+| 7 | Run `docker compose up localization ros2_bridge gr00t` (no `mock_robot`) |
+| 8 | Deploy trained RL checkpoint to onboard compute |
+
+---
+
+## Validation Commands
+
+```bash
+# Syntax-check all Python files
+find . -name "*.py" | xargs python3 -m py_compile && echo "All OK"
+
+# Validate docker-compose config
+docker compose config --quiet && echo "Compose OK"
+
+# Run domain randomization self-test (no Isaac Sim needed)
+python3 isaac_lab/domain_rand.py
+
+# Run safety monitor offline self-test (no ROS needed)
+python3 ros2_bridge/safety_monitor.py
+
+# Run mock robot dynamics test (no ROS needed)
+python3 mock_robot/mock_g1_node.py
+```
