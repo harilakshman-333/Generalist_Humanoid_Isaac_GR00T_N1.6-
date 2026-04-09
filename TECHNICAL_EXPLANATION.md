@@ -15,11 +15,49 @@ The project implements a **Sim-to-Real** pipeline designed to enable a Unitree G
 - **VLA Brain**: Unitree UnifoLM-VLA / NVIDIA GR00T-N1.6.
 - **Localization**: Isaac ROS Visual SLAM.
 
+### High-Level Information Flow
+
+```mermaid
+graph TD
+    User([User Instruction]) --> VLA[VLA Brain / UnifoLM]
+    Cameras[Robot Cameras] --> VLA
+    VLA -->|Target Pose/Task| Bridge[ROS 2 Bridge]
+    SLAM[Isaac ROS VSLAM] -->|100Hz Odometry| Bridge
+    Bridge -->|Velocity Commands| RL[Whole-Body RL Policy]
+    RL -->|Joint Targets| Safety[Safety Monitor]
+    Safety -->|Filtered Commands| G1[Unitree G1 / Sim]
+    G1 -->|Joint States/IMU| RL
+    G1 -->|States| Bridge
+```
+
 ---
 
 ## 2. Component Architecture
 
 The system follows a modular, containerized architecture that decouples the "brain" from the "body."
+
+```mermaid
+graph LR
+    subgraph Brain
+        VLA[gr00t_model / VLA]
+    end
+    subgraph Middleware
+        ROS2[ROS 2 Humble / Bridge]
+        SLAM[Localization / VSLAM]
+    end
+    subgraph Body
+        RL[isaac_lab / RL Policy]
+    end
+    subgraph HW_Sim
+        G1[G1 Hardware / Mock Robot]
+    end
+
+    VLA <--> ROS2
+    SLAM --> ROS2
+    ROS2 <--> RL
+    RL <--> G1
+    ROS2 <--> G1
+```
 
 ### A. Whole-Body Reinforcement Learning (`isaac_lab/`)
 The locomotion and whole-body coordination are trained using **Proximal Policy Optimization (PPO)** within Isaac Lab.
@@ -39,6 +77,21 @@ This is the "nervous system" of the robot.
 - **State Machine**: Manages transitions between `IDLE`, `LOCALIZING`, `NAVIGATING`, and `MANIPULATING`.
 - **Safety Monitor (100 Hz)**: A critical watchdog that monitors joint limits, velocity spikes, and IMU tilt. It can trigger a hardware E-STOP if any safety boundary is breached.
 - **Command Watchdog**: Prevents "runaway" behavior by stopping the robot if communication from the VLA or RL policy is lost for more than 500ms.
+
+#### Safety Logic Flow
+```mermaid
+graph TD
+    Cmd[Incoming Command] --> Limits{Within Soft Limits?}
+    Limits -- Yes --> Vel{Velocity < 10 rad/s?}
+    Vel -- Yes --> Tilt{Tilt < 35°?}
+    Tilt -- Yes --> Execute[Execute Action]
+    
+    Limits -- No --> Warn[Warning / Slowdown]
+    Vel -- No --> ESTOP[EMERGENCY STOP]
+    Tilt -- No --> ESTOP
+    Execute --> Watchdog{Heartbeat OK?}
+    Watchdog -- No --> ESTOP
+```
 
 ### D. Localization (`localization/`)
 Uses the **Isaac ROS VSLAM** stack.
