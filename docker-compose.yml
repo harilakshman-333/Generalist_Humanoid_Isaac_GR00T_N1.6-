@@ -86,9 +86,14 @@ services:
       - ACCEPT_EULA=Y
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
+      - DISPLAY=${DISPLAY:-:0}
+    ipc: host
+    network_mode: host
     volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./isaac_lab:/workspace/isaac_lab         # live-edit scripts
       - ./compass_nav:/workspace/compass_nav      # live-edit data gen
+      - ./unitree_rl_lab:/workspace/unitree_rl_lab # <--- ADDED: Mount your cloned repo
       - isaac_logs:/workspace/isaac_lab/logs      # persist checkpoints
       - compass_data:/workspace/compass_nav/data  # persist datasets
     # Default: interactive shell. Override per run command.

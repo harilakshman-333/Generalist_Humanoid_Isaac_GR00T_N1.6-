@@ -63,7 +63,7 @@ RUN /isaac-sim/python.sh -m pip install --upgrade pip && \
 # RSL-RL (PPO implementation used by train_policy.py)
 # ---------------------------------------------------------------------------
 RUN /isaac-sim/python.sh -m pip install --no-cache-dir \
-    rsl-rl \
+    "git+https://github.com/leggedrobotics/rsl_rl.git" \
     tensorboard \
     matplotlib \
     scipy \
